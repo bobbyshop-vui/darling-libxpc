@@ -209,7 +209,9 @@ out:
 				goto out;
 			}
 
-			*incomingMessage = dict;
+			// The caller owns the message (+1) and releases it, like on macOS;
+			// handing out the autoreleased object led to a double release.
+			*incomingMessage = [dict retain];
 
 			status = 0;
 		} else {
@@ -249,7 +251,8 @@ out:
 				goto out;
 			}
 
-			*incomingMessage = dict;
+			// The caller owns the message (+1); launchd releases it.
+			*incomingMessage = [dict retain];
 			*replyPort = header->msgh_local_port;
 
 			status = 0;
@@ -581,7 +584,11 @@ retry:
 					goto out;
 				}
 
-				*reply = dict;
+				// xpc_pipe_routine returns an owned (+1) reply that callers
+				// (Libinfo, launchd clients) xpc_release. Returning the
+				// autoreleased object freed it early and crashed daemons such
+				// as trustd when dispatch_main popped the main thread's pool.
+				*reply = [dict retain];
 
 				status = 0;
 			} else {
