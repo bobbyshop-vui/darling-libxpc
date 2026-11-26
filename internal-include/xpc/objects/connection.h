@@ -90,6 +90,9 @@ struct xpc_connection_s {
 	xpc_finalizer_t finalizer;
 	atomic_intmax_t suspension_count;
 	bool is_cancelled;
+	// set when activation couldn't look up the named service; sends then fail
+	// with XPC_ERROR_CONNECTION_INVALID instead of waiting forever
+	bool lookup_failed;
 
 	//
 	// other

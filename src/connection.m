@@ -745,6 +745,7 @@ OS_OBJECT_USES_XREF_DISPOSE();
 		status = bootstrap_look_up(bootstrap_port, this->service_name, &this->checkin_port);
 		if (status != KERN_SUCCESS) {
 			xpc_log_error(connection, "failed to lookup service with name \"%s\"", this->service_name);
+			this->lookup_failed = true;
 			goto error_out;
 		}
 	} else if (this->is_server_peer) {
@@ -892,6 +893,15 @@ error_out:
 	dispatch_mach_send_barrier(this->mach_ctx, barrier);
 }
 
+// The named service couldn't be looked up (it doesn't exist, e.g. an XPC
+// service Darling doesn't provide). The channel was never connected, so a
+// send would wait forever; macOS fails such sends with
+// XPC_ERROR_CONNECTION_INVALID.
+static bool xpc_connection_has_no_service(struct xpc_connection_s* this, XPC_CLASS(dictionary)* contents)
+{
+	return this->lookup_failed && !MACH_PORT_VALID(contents.outgoingPort) && !MACH_PORT_VALID(this->send_port);
+}
+
 - (void)sendMessage: (XPC_CLASS(dictionary)*)contents
 {
 	@autoreleasepool {
@@ -900,6 +910,10 @@ error_out:
 		dispatch_mach_msg_t message = NULL;
 		dispatch_mach_reason_t sendResult = 0;
 		mach_error_t sendError = ERR_SUCCESS;
+
+		if (xpc_connection_has_no_service(this, contents)) {
+			return;
+		}
 
 		if (![serializer writeObject: contents]) {
 			xpc_abort("failed to serialize dictionary");
@@ -929,6 +943,18 @@ error_out:
 		mach_port_t replyPort = xpc_mach_port_create_receive();
 		dispatch_mach_reason_t sendResult = 0;
 		mach_error_t sendError = ERR_SUCCESS;
+
+		if (xpc_connection_has_no_service(this, contents)) {
+			xpc_mach_port_release_receive(replyPort);
+			if (handler) {
+				xpc_handler_t replyHandler = Block_copy(handler);
+				dispatch_async(queue ? queue : dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+					replyHandler(XPC_ERROR_CONNECTION_INVALID);
+					Block_release(replyHandler);
+				});
+			}
+			return;
+		}
 
 		if (!MACH_PORT_VALID(replyPort)) {
 			xpc_abort("failed to allocate reply port");
@@ -963,6 +989,10 @@ error_out:
 	dispatch_mach_msg_t reply = NULL;
 	XPC_CLASS(dictionary)* result = nil;
 	mach_msg_header_t* header = NULL;
+
+	if (xpc_connection_has_no_service(this, contents)) {
+		return XPC_ERROR_CONNECTION_INVALID;
+	}
 
 	@autoreleasepool {
 		XPC_CLASS(serializer)* serializer = [XPC_CLASS(serializer) serializer];
